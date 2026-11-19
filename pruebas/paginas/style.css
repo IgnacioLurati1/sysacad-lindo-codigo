@@ -1,0 +1,140 @@
+html, body {height: 100%;}
+
+body {
+	background-image:url('../../fondo.gif'); 
+	margin: auto;
+	font-family: 'Open Sans', sans-serif;
+} 
+
+.wrapper > table:nth-child(3) > tbody > tr:nth-child(2) > td {
+	/* background-color: #808080; */
+} 
+
+.wrapper > table > tbody > tr:nth-child(2) > td {
+	/* background-color: #808080; */
+} 
+
+.wrapper > form > table > tbody > tr:nth-child(2) > td {
+	/* background-color: #808080; */
+}
+
+/* CONTAINER DE PAGINA */
+
+#page-container {
+	position: relative;
+  	min-height: 100vh;		
+}
+
+.wrapper {
+  padding-bottom: 50px;
+}
+
+/* HEADER */
+
+.header {
+	overflow: hidden;
+	padding: 20px; 
+	height: 120px; 
+	background: #cececea6; 
+	margin-bottom: 40px;
+}
+
+.header .logo {
+	float: left;
+	position: absolute;
+}
+
+.header .logo > img {
+	width: 100px;
+}
+
+.header-right {
+	width: 100%;
+	margin: auto;
+}
+
+.header .titulo {
+	color: #4c4c4c; 
+	font-family: 'Open Sans', sans-serif; 
+	margin-top: 0;
+}
+
+.header .subtitulo {
+	color: #4c4c4c; 
+	font-family: 'Open Sans', sans-serif; 
+	margin-top: 0;
+	font-size: 20px;
+}
+
+
+/* BODY TABLE */
+
+.textoTabla {
+	font-family: 'Open Sans', sans-serif;
+}
+
+.tituloTabla {
+	background-color: #1c639c; 
+	padding: 10px; 
+	color: #FFFFFF; 
+	font-family: 'Open Sans', sans-serif;
+	text-align: center
+}
+
+.tituloTablaImportante {
+	background-color: #ab3c2d; 
+	padding: 10px; 
+	color: #FFFFFF; 
+	font-family: 'Open Sans', sans-serif;
+	text-align: center
+}
+
+.textoTabla > li > a {
+	text-decoration:unset;
+	color: #000;
+}
+
+.textoSubtituloTabla {
+	font-family: 'Open Sans', sans-serif; 
+	color:darkred; 
+	font-weight:bold;
+}
+
+.textoError {
+	font-family: 'Open Sans', sans-serif;
+	color:red;
+}
+
+.textoAvisoMensajes {
+	font-family: 'Open Sans', sans-serif; 
+	color:red; 
+	text-align: center;
+}
+
+.textoModificado {
+	color:blue;
+}
+
+.textoResaltado {
+	font-weight:bold; 
+	color:darkred;
+}
+
+.TextoProblema {
+	color:red;
+}
+
+/* FOOTER */
+
+.footer.aviso {
+	font-family: 'Open Sans', sans-serif;
+	font-size: 1.125rem;
+	text-align: center;
+	background: #cececea6;
+	line-height: 50px;
+	height: 50px;
+	bottom: 0px;
+	width: 100%;
+    margin-top: 30px;
+    position: absolute;
+}

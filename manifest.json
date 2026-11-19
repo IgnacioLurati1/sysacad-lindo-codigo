@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Sysacad Lindo",
+  "version": "2.4.1",
+  "description": "Rediseña Sysacad FRRO: tu carrera por año, filtros, modo oscuro y tus materias a mano. Todas las acciones las hacés vos.",
+  "permissions": ["storage"],
+  "web_accessible_resources": [
+    {
+      "resources": ["fuentes/serif.woff2", "fuentes/serif-italica.woff2", "fuentes/sans.woff2"],
+      "matches": ["https://alumnos.frro.utn.edu.ar/*"]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://alumnos.frro.utn.edu.ar/*"],
+      "js": ["inicio.js"],
+      "css": ["estilo.css"],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://alumnos.frro.utn.edu.ar/*"],
+      "js": ["contenido.js"],
+      "run_at": "document_end",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://lutastudios.com/utn/*"],
+      "js": ["santo.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://supercvg.lutastudios.com/*"],
+      "js": ["supercvg.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
