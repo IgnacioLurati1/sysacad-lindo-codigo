@@ -141,8 +141,18 @@ postMessage({ fuente: 'super-cvg', pide: 'sysacad' }, location.origin);
 </script></body></html>`,
 };
 
+// An exam ten days from today and next year's enrollment schedule, so "Próximas fechas" always has something ahead.
+const FUTURO = new Date();
+FUTURO.setDate(FUTURO.getDate() + 10);
+const dos = (n) => String(n).padStart(2, '0');
+const FUTURO_ISO = `${FUTURO.getFullYear()}-${dos(FUTURO.getMonth() + 1)}-${dos(FUTURO.getDate())}`;
+const FUTURO_TEXTO = `${['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'][FUTURO.getDay()]} ${FUTURO.getDate()} de ${['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'][FUTURO.getMonth()]}`;
+const PROXIMO = new Date().getFullYear() + 1;
+
 const PAGES = {
   '/loginAlumno.asp': real('login-real.html'),
+  '/loginAlumno.asp?futuro': real('login-real.html').replaceAll('/2026 (8hs)', `/${PROXIMO} (8hs)`),
+  '/certificadoExamen.asp?futuro': real('certificado-examen-real.html').replace('jueves 10 de diciembre', FUTURO_TEXTO),
   '/notasParciales.asp?id=11111-1': real('notas-real.html'),
   '/examenes.asp?id=2': real('examenes-real.html'),
   '/correlatividadCursado.asp?id=11111-1': real('correlatividad-cursado-real.html'),
@@ -217,6 +227,13 @@ const open = async (path) => {
   await page.goto(ORIGIN + path);
 };
 const panel = page.locator('#sysacad-lindo');
+// Presses a download link like the student and gives back the rows of the CSV, after checking how Excel will read it.
+const descargar = async (enlace) => {
+  const [archivo] = await Promise.all([page.waitForEvent('download'), enlace.click()]);
+  const texto = readFileSync(await archivo.path(), 'utf8');
+  assert.ok(texto.startsWith('﻿'), 'a byte order mark, so Excel reads the accents');
+  return { nombre: archivo.suggestedFilename(), filas: texto.slice(1).trimEnd().split('\r\n').map((l) => l.split(';')) };
+};
 const addSubject = async (name, commission = '') => {
   await panel.getByRole('button', { name: /Agregar materia|Mostrar panel/ }).first().waitFor();
   const toggle = panel.getByRole('button', { name: 'Agregar materia' });
@@ -625,6 +642,14 @@ try {
     await assertNoSidewaysScroll();
     await page.screenshot({ path: join(SHOTS, 'estado-angosto.png') });
     await page.setViewportSize({ width: 1280, height: 800 });
+
+    const { nombre, filas } = await descargar(page.getByRole('link', { name: 'Descargar en Excel' }));
+    assert.match(nombre, /^estado-academico-\d{4}-\d{2}-\d{2}\.csv$/);
+    assert.deepEqual(filas[0], ['Año', 'Materia', 'Tipo', 'Estado', 'Cuándo', 'Nota', 'Horas', 'Registro']);
+    assert.equal(filas.length, 1 + await page.locator('tr.sl-materia').count(), 'every subject, filtered or not');
+    const algoritmos = filas.find((f) => f[1].startsWith('Algoritmos'));
+    assert.deepEqual([algoritmos[2], algoritmos[3], algoritmos[5], algoritmos[6], algoritmos[7]], ['Obligatoria', 'Aprobada', '10', '5', 'Tomo 111, folio 22']);
+    assert.equal(filas.find((f) => f[1] === 'Redes de Datos')[3], 'Inscripto');
   });
 
   await check('academic record: each state shows the same number in the summary and in its filter, electives apart', async () => {
@@ -740,17 +765,56 @@ try {
     assert.equal(await page.locator('h1.sl-titulo').textContent(), 'Exámenes');
     assert.ok(await page.getByText('Datos al 2/11/2026 22:03:03').isVisible());
     assert.ok(!(await page.getByText('Pérez').isVisible()), 'the row with the name is gone');
-    const notaAlto = () => page.locator('tr.textoTabla', { hasText: 'diez' }).first().isVisible();
+    const notaAlto = () => page.locator('tr.textoTabla', { hasText: '10' }).first().isVisible();
+    assert.equal(await page.locator('table.sl-datos').getByText(/^(cero|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|Ausen\.)$/).count(), 0, 'grades as numbers, absences in full');
+    assert.ok(await page.locator('table.sl-datos td', { hasText: /^Ausente$/ }).first().isVisible());
     assert.ok(await notaAlto());
     await page.getByRole('button', { name: 'Nota', exact: true }).click();
     await page.getByRole('button', { name: 'Nota', exact: true }).click();
     const primera = await page.locator('table.sl-datos tr').nth(1).locator('td').nth(2).textContent();
-    assert.equal(primera.trim(), 'diez', 'descending order starts at the top grade');
+    assert.equal(primera.trim(), '10', 'descending order starts at the top grade');
     await assertNoSidewaysScroll();
     await page.screenshot({ path: join(SHOTS, 'real-examenes.png'), fullPage: true });
     await page.setViewportSize({ width: 390, height: 800 });
     await assertNoSidewaysScroll();
     await page.screenshot({ path: join(SHOTS, 'real-examenes-390.png'), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 800 });
+  });
+
+  await check('real exams: the history adds up the table, by year, period and grade, and downloads it', async () => {
+    await open('/examenes.asp?id=2');
+    await page.locator('.sl-historial').waitFor();
+    // The same numbers, worked out here from the raw rows.
+    const filas = (await page.locator('table.sl-datos tr').evaluateAll((trs) => trs.map((tr) => [...tr.cells].map((c) => c.textContent.trim())))).filter((f) => /^\d{2}\/\d{2}\/\d{4}$/.test(f[0]));
+    const notas = filas.map((f) => (/^\d+$/.test(f[2]) ? Number(f[2]) : -1)).filter((n) => n >= 0);
+    assert.equal(notas.length + filas.filter((f) => f[2] === 'Ausente').length, filas.length, 'every grade a number or an absence');
+    const aprobadas = notas.filter((n) => n >= 6);
+    const media = (l) => (l.reduce((a, b) => a + b, 0) / l.length).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    assert.ok(aprobadas.length < notas.length, 'the page has fails, so both averages show');
+    assert.deepEqual(await page.locator('.sl-historial .sl-promedio strong').allTextContents(), [media(aprobadas), media(notas)]);
+    assert.equal(await page.locator('.sl-historial .sl-avance-titulo').textContent(), `${aprobadas.length} de ${filas.length} exámenes aprobados`);
+    assert.equal(await page.locator('.sl-g-nota').count(), aprobadas.length, 'a dot per passed final');
+    assert.deepEqual(await page.locator('.sl-anio h2').allTextContents(), ['Tu promedio en el tiempo', 'Año por año', 'Por turno', 'Tus notas', 'Las que más vueltas te dieron']);
+    const anios = await page.locator('.sl-anio', { hasText: 'Año por año' }).locator('tbody th').allTextContents();
+    assert.deepEqual(anios, [...new Set(filas.map((f) => f[0].slice(-4)))].sort());
+    const algebra = filas.filter((f) => f[1] === 'Álgebra y Geometría Analítica').length;
+    assert.equal(await page.locator('.sl-intentos li', { hasText: 'Álgebra y Geometría Analítica' }).locator('span').textContent().then((t) => t.split(':')[0]), `${algebra} veces`, 'every try of a subject');
+    assert.equal(await page.locator('.sl-reparto li').first().locator('.sl-reparto-nota').textContent(), '10');
+    assert.ok(await page.locator('table.sl-datos').isVisible(), 'the table stays below');
+
+    const { nombre, filas: csv } = await descargar(page.getByRole('link', { name: 'Descargar en Excel' }));
+    assert.match(nombre, /^examenes-\d{4}-\d{2}-\d{2}\.csv$/);
+    assert.deepEqual(csv[0], ['Fecha', 'Materia', 'Nota', 'Resultado', 'Plan', 'Código']);
+    assert.equal(csv.length, filas.length + 1);
+    assert.deepEqual(csv[1], ['01/01/2021', 'Algoritmos y Estructuras de Datos', '8', 'Aprobado', '2023', '106'], 'oldest first, grade as a number');
+    assert.ok(csv.some((f) => f[3] === 'Ausente' && f[2] === ''));
+    assert.ok(csv.some((f) => f[3] === 'Aplazo' && f[2] === '5'));
+
+    await assertNoSidewaysScroll();
+    await page.screenshot({ path: join(SHOTS, 'real-examenes-historial.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 800 });
+    await assertNoSidewaysScroll();
+    await page.screenshot({ path: join(SHOTS, 'real-examenes-historial-390.png'), fullPage: true });
     await page.setViewportSize({ width: 1280, height: 800 });
   });
 
@@ -776,9 +840,23 @@ try {
     assert.ok(!(await page.getByText('Pérez').isVisible()));
     const pueden = (real('correlatividad-cursado-real.html').match(/Puede cursar/g) ?? []).length;
     assert.equal(await page.locator('.sl-promedio strong').textContent(), String(pueden));
-    assert.deepEqual(await page.locator('.sl-anio h2').allTextContents(), ['Año 1', 'Año 2', 'Año 3', 'Año 4', 'Año 5']);
+    assert.deepEqual(await page.locator('.sl-lista .sl-anio h2').allTextContents(), ['Año 1', 'Año 2', 'Año 3', 'Año 4', 'Año 5']);
     assert.ok(await page.getByText('Lo que más te frena').isVisible());
     assert.match(await page.locator('.sl-frenos li').first().textContent(), /Administración de Sistemas de Información.*frena \d+ materias/);
+    // Along the chain, each subject also counts what the subjects it holds back hold back in turn.
+    const cuentas = async () => Object.fromEntries(await page.locator('.sl-frenos-vista:visible button.sl-freno').evaluateAll((bs) => bs.map((b) => [b.querySelector('span').textContent, Number(b.querySelector('small').textContent.match(/\d+/)[0])])));
+    const modo = page.getByRole('group', { name: 'Cómo contar lo que frena' });
+    const directas = await cuentas();
+    await modo.getByRole('button', { name: 'En cadena' }).click();
+    assert.ok(await page.getByText('Suma también lo que frenan, a su vez, esas materias.').isVisible());
+    const enCadena = await cuentas();
+    assert.deepEqual(Object.keys(enCadena).sort(), Object.keys(directas).sort(), 'the same subjects');
+    assert.ok(Object.keys(directas).every((n) => enCadena[n] >= directas[n]), 'never fewer than directly');
+    assert.ok(enCadena['Comunicación de Datos'] > directas['Comunicación de Datos'], 'Redes de Datos waits for it, and others wait for Redes de Datos');
+    const orden = Object.values(enCadena);
+    assert.deepEqual(orden, [...orden].sort((a, b) => b - a), 'most first');
+    await modo.getByRole('button', { name: 'Directas' }).click();
+    assert.deepEqual(await cuentas(), directas);
     assert.equal(await page.locator('.sl-estado').getByText('Ord.').count(), 0, 'the ordinance number stays out of the view');
     const nombres = await page.locator('.sl-materia-nombre').allTextContents();
     assert.ok(nombres.includes('Administración de Sistemas de Información'), 'a cut name is completed from another row');
@@ -795,6 +873,43 @@ try {
     await page.setViewportSize({ width: 390, height: 800 });
     await assertNoSidewaysScroll();
     await page.screenshot({ path: join(SHOTS, 'real-correlatividad-cursado-390.png'), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 800 });
+  });
+
+  await check('real prerequisites to enroll: stages from what you can take now to the last one, with the longest chain', async () => {
+    await open('/correlatividadCursado.asp?id=11111-1');
+    await page.locator('.sl-tablero').waitFor();
+    const etapas = page.locator('.sl-etapas');
+    assert.ok(!(await etapas.isVisible()), 'the list comes first');
+    await page.getByRole('group', { name: 'Cambiar vista' }).getByRole('button', { name: 'Etapas' }).click();
+    assert.ok(await etapas.isVisible());
+    assert.ok(!(await page.locator('.sl-lista').isVisible()) && !(await page.locator('.sl-mapa').isVisible()));
+    const pueden = (real('correlatividad-cursado-real.html').match(/Puede cursar/g) ?? []).length;
+    const primera = etapas.locator('.sl-anio').first();
+    assert.equal(await primera.locator('h2').textContent(), 'Ya podés cursar');
+    assert.equal(await primera.locator('tr.sl-etapa-fila').count(), pueden, 'stage 1 is everything you can take now');
+    const titulos = await etapas.locator('.sl-anio h2').allTextContents();
+    assert.deepEqual(titulos, ['Ya podés cursar', ...titulos.slice(1).map((_, i) => `Etapa ${i + 2}`)], 'stages in order, none skipped');
+    assert.equal(await etapas.locator('tr.sl-etapa-fila').count(), await page.locator('.sl-lista tr.sl-materia').count(), 'every subject in one stage');
+    // Each subject sits one stage after the latest of the subjects it waits for.
+    const etapaDe = Object.fromEntries(await etapas.locator('.sl-anio').evaluateAll((secciones) => secciones.flatMap((s, i) => [...s.querySelectorAll('.sl-materia-nombre')].map((n) => [n.textContent, i + 1]))));
+    assert.equal(etapaDe['Redes de Datos'], etapaDe['Comunicación de Datos'] + 1);
+    assert.equal(etapaDe['Ciencia de Datos'], etapaDe['Simulación'] + 1);
+    const resumen = await page.locator('.sl-tarjeta-etapas .sl-electivas').textContent();
+    const cuantas = Math.max(...Object.entries(etapaDe).filter(([n]) => !/\(Elec\.\)|^Seminario/.test(n)).map(([, e]) => e));
+    assert.match(resumen, new RegExp(`^Al menos ${cuantas} etapas de cursado\\. La cadena más larga: .+ → .+\\.$`));
+    const cadena = resumen.replace(/^.*La cadena más larga: /, '').replace(/\.$/, '').split(' → ');
+    assert.equal(cadena.length, cuantas, 'one subject per stage');
+    assert.deepEqual(cadena.map((n) => etapaDe[n]), cadena.map((_, i) => i + 1));
+    await page.getByRole('group', { name: 'Filtrar por año' }).getByRole('button', { name: 'Año 5' }).click();
+    assert.ok((await etapas.locator('tr.sl-etapa-fila:visible .sl-col-anio').allTextContents()).every((t) => t === 'Año 5'), 'the filters work on the stages too');
+    assert.ok(await etapas.locator('tr.sl-etapa-fila:visible').count() > 0);
+    await page.getByRole('group', { name: 'Filtrar por año' }).getByRole('button', { name: 'Todos' }).click();
+    await assertNoSidewaysScroll();
+    await page.screenshot({ path: join(SHOTS, 'real-correlatividad-etapas.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 800 });
+    await assertNoSidewaysScroll();
+    await page.screenshot({ path: join(SHOTS, 'real-correlatividad-etapas-390.png'), fullPage: true });
     await page.setViewportSize({ width: 1280, height: 800 });
   });
 
@@ -823,11 +938,11 @@ try {
     await page.locator('.sl-simulador').waitFor();
     const resultado = page.locator('p.sl-simulacion');
     assert.equal(await resultado.textContent(), 'Tocá una para ver qué se te libera si la sacás.');
-    await page.locator('button.sl-freno', { hasText: 'Simulación' }).click();
-    assert.equal(await page.locator('button.sl-freno', { hasText: 'Simulación' }).getAttribute('aria-pressed'), 'true');
+    await page.locator('.sl-frenos-vista:not(.sl-filtrada) button.sl-freno', { hasText: 'Simulación' }).click();
+    assert.equal(await page.locator('.sl-frenos-vista:not(.sl-filtrada) button.sl-freno', { hasText: 'Simulación' }).getAttribute('aria-pressed'), 'true');
     assert.equal(await resultado.textContent(), 'Si sacás Simulación, ya podés cursar Ciencia de Datos e Inteligencia Artificial.');
     assert.equal(await page.locator('tr.sl-libera').count(), 2);
-    await page.locator('button.sl-freno', { hasText: 'Administración de Sistemas de Información' }).click();
+    await page.locator('.sl-frenos-vista:not(.sl-filtrada) button.sl-freno', { hasText: 'Administración de Sistemas de Información' }).click();
     assert.equal(await page.locator('tr.sl-libera').count(), 5, 'subjects waiting for both get freed too');
     assert.ok(await page.locator('tr.sl-libera', { hasText: 'Fabricación Aditiva' }).isVisible());
     await page.getByRole('button', { name: 'Empezar de nuevo' }).click();
@@ -852,7 +967,7 @@ try {
     const redes = page.locator('button.sl-nodo', { hasText: 'Redes de Datos' });
     await page.locator('button.sl-nodo', { hasText: 'Comunicación de Datos' }).click();
     assert.match(await redes.getAttribute('class'), /sl-n-libera/);
-    assert.equal(await page.locator('button.sl-freno', { hasText: 'Comunicación de Datos' }).getAttribute('aria-pressed'), 'true', 'the summary follows the map');
+    assert.equal(await page.locator('.sl-frenos-vista:not(.sl-filtrada) button.sl-freno', { hasText: 'Comunicación de Datos' }).getAttribute('aria-pressed'), 'true', 'the summary follows the map');
     await page.locator('button.sl-nodo', { hasText: 'Ciencia de Datos' }).hover();
     assert.match(await page.locator('button.sl-nodo', { hasText: 'Simulación' }).getAttribute('class'), /sl-en-cadena/, 'pointing at a subject lights what is behind it');
     await page.mouse.move(5, 5);
@@ -1117,6 +1232,45 @@ try {
     await assertNoSidewaysScroll();
     await page.screenshot({ path: join(SHOTS, 'real-examen-certificado-390.png'), fullPage: true });
     await page.setViewportSize({ width: 1280, height: 800 });
+  });
+
+  await check('menu: what comes next, from the schedule on the login page and the exams you enrolled in', async () => {
+    await open('/menuAlumno.asp');
+    await page.locator('.sl-menu').waitFor();
+    await open('/loginAlumno.asp?futuro');
+    await page.locator('.sl-ingresar').waitFor();
+    await open('/certificadoExamen.asp?futuro');
+    await page.locator('.sl-comprobantes').waitFor();
+    await page.waitForTimeout(300);
+    await open('/menuAlumno.asp');
+    const viene = page.locator('.sl-viene');
+    await viene.waitFor();
+    assert.equal(await viene.getByRole('heading').textContent(), 'Próximas fechas');
+    const items = await viene.locator('li').evaluateAll((lis) => lis.map((li) => [li.querySelector('.sl-viene-falta').textContent, li.querySelector('strong').textContent, li.querySelector('div > span').textContent]));
+    assert.deepEqual(items.map((i) => i[1]), ['Examen de Tecnologías para la Automatización', 'Inscripción a cursado 2026: tu turno', 'Inscripción a cursado 2026: electivas'], 'soonest first, and only your turn');
+    assert.equal(items[0][0], 'En 10 días');
+    assert.match(items[0][2], /^\S+ \d+ de \S+ · 15:00 · tribunal Ferreyra$/);
+    assert.match(items[1][2], /^\S+ 4 de marzo · desde las 8$/, 'the turn of the year of entry, 2023');
+    assert.match(items[2][2], /^\S+ 9 de marzo · desde las 8$/);
+    assert.ok(await viene.evaluate((v) => v.previousElementSibling?.classList.contains('sl-grupo-principal')), 'under the two enrollment cards');
+    await assertNoSidewaysScroll();
+    await page.screenshot({ path: join(SHOTS, 'menu-lo-que-viene.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 800 });
+    await assertNoSidewaysScroll();
+    await page.screenshot({ path: join(SHOTS, 'menu-lo-que-viene-390.png'), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 800 });
+
+    // What already went by stays out.
+    await open('/loginAlumno.asp');
+    await page.locator('.sl-ingresar').waitFor();
+    await open('/certificadoExamen.asp');
+    await page.locator('.sl-comprobantes').waitFor();
+    await page.waitForTimeout(300);
+    await open('/menuAlumno.asp');
+    await page.locator('.sl-menu').waitFor();
+    await page.waitForTimeout(300);
+    const pasado = new Date() > new Date(2026, 11, 10);
+    assert.equal(await page.locator('.sl-viene').count(), pasado ? 0 : 1, 'March 2026 is gone, and the exam of the real page too once it went by');
   });
 
   await check('idle page sends nothing for 3 seconds', async () => {
@@ -1385,14 +1539,14 @@ try {
     await abrirPestana('/menuAlumno.asp');
     s = await guardado();
     assert.equal(s.supercvgGuardaPestanas, false);
-    assert.equal(s.supercvgPestanas, undefined, 'switched off: nothing');
-    assert.equal(s.supercvgAlumno, undefined);
+    assert.equal(s.supercvgPestanas, undefined, 'switched off: no copies');
+    assert.equal(s.supercvgAlumno, 'Pérez, Ana', 'the name stays for the exams');
     assert.deepEqual(await pedirCvg('pestanas'), sinPestanas(true, false));
     await page.bringToFront();
     await abrirAjustes();
     await ajustePestanas().check();
     await cerrarAjustes();
-    assert.deepEqual(await pedirCvg('pestanas'), sinPestanas(true, true));
+    assert.deepEqual(await pedirCvg('pestanas'), { ...sinPestanas(true, true), alumno: 'Pérez, Ana' }, 'the name kept with the switch off goes once it is on');
   });
 
   await check('Super CVG: each tab keeps its text copy, as Sysacad shows it and without its frame', async () => {
@@ -1519,6 +1673,47 @@ try {
     assert.deepEqual({ ...v1, fecha: 0 }, { ...sinVincular, vinculada: true, fecha: 0, finales: FINALES });
   });
 
+  await check('Super CVG: the exams you enrolled in go to its calendar, checked like the contract says', async () => {
+    await abrirPestana('/menuAlumno.asp');
+    await abrirPestana('/certificadoExamen.asp?futuro');
+    const mensaje = await pedirCvg('examenes');
+    assert.deepEqual(Object.keys(mensaje), ['fuente', 'para', 'v', 'tipo', 'vinculada', 'alumno', 'fecha', 'examenes']);
+    assert.deepEqual({ ...mensaje, fecha: 0 }, {
+      fuente: 'sysacad-lindo', para: 'super-cvg', v: 3, tipo: 'examenes', vinculada: true, alumno: 'Pérez, Ana', fecha: 0,
+      examenes: [{ materia: 'Tecnologías para la Automatización', dia: FUTURO_ISO, turno: 'Tarde', teorico: '15:00', practico: '15:00', tribunal: 'Ferreyra' }],
+    });
+    assert.ok(Number.isInteger(mensaje.fecha) && mensaje.fecha <= Date.now() && mensaje.fecha > Date.now() - 120000);
+    assert.doesNotMatch(JSON.stringify(mensaje), /R3N8VD|residente|@/, 'never the security code nor the mail');
+
+    // Whatever is kept, only valid exams go, once each and in order.
+    await enLaExtension(`chrome.storage.local.set({ examenesInscriptos: { fecha: Date.now(), examenes: [
+      { materia: 'Física II', dia: '2027-02-30', turno: 'Mañana', teorico: '08:00', practico: null, tribunal: 'X' },
+      { materia: '  ', dia: '2027-02-10', turno: 'Mañana', teorico: null, practico: null, tribunal: null },
+      { materia: 'Física II', dia: '2027-02-10', turno: '', teorico: '25:00', practico: '8:00', tribunal: '', codigo: 'ABC' },
+      { materia: 'Física II', dia: '2027-02-10', turno: 'Tarde', teorico: null, practico: null, tribunal: null },
+      { materia: 'Economía', dia: '2027-02-03', turno: 'Noche', teorico: '19:00', practico: '19:30', tribunal: 'Sosa' },
+    ] } })`);
+    assert.deepEqual((await pedirCvg('examenes')).examenes, [
+      { materia: 'Economía', dia: '2027-02-03', turno: 'Noche', teorico: '19:00', practico: '19:30', tribunal: 'Sosa' },
+      { materia: 'Física II', dia: '2027-02-10', turno: null, teorico: null, practico: null, tribunal: null },
+    ]);
+    await enLaExtension(`chrome.storage.local.set({ examenesInscriptos: { fecha: Date.now() + 3 * 86400000, examenes: [{ materia: 'Economía', dia: '2027-02-03', turno: null, teorico: null, practico: null, tribunal: null }] } })`);
+    const adelantado = await pedirCvg('examenes');
+    assert.deepEqual([adelantado.fecha, adelantado.examenes], [null, []], 'a date ahead of the clock sends nothing');
+
+    // Unlinked: nothing at all.
+    await enLaExtension(`chrome.storage.local.set({ supercvgVinculado: false })`);
+    assert.deepEqual(await pedirCvg('examenes'), { fuente: 'sysacad-lindo', para: 'super-cvg', v: 3, tipo: 'examenes', vinculada: false, alumno: null, fecha: null, examenes: [] });
+    await enLaExtension(`chrome.storage.local.set({ supercvgVinculado: true })`);
+
+    // Another student on the menu: the exams of the one before go away.
+    await abrirPestana('/certificadoExamen.asp?futuro');
+    await enLaExtension(`chrome.storage.local.set({ alumnoMenu: 'GÓMEZ, Luis' })`);
+    await abrirPestana('/menuAlumno.asp');
+    assert.equal((await guardado()).examenesInscriptos, undefined);
+    assert.deepEqual(await pedirCvg('examenes'), { fuente: 'sysacad-lindo', para: 'super-cvg', v: 3, tipo: 'examenes', vinculada: true, alumno: 'Pérez, Ana', fecha: null, examenes: [] });
+  });
+
   await check('Super CVG: other pages copy nothing, and forgetting, another student or unlinking wipe the copies', async () => {
     assert.deepEqual(await pedirCvg('olvidar-pestanas'), sinPestanas(true, true));
     let s = await guardado();
@@ -1542,7 +1737,7 @@ try {
     await ajustePestanas().uncheck();
     await cerrarAjustes();
     s = await guardado();
-    assert.ok(!('supercvgPestanas' in s) && !('supercvgAlumno' in s), 'switched off');
+    assert.ok(!('supercvgPestanas' in s) && s.supercvgAlumno === 'Pérez, Ana', 'switched off: the copies go, the name stays');
     await abrirAjustes();
     await ajustePestanas().check();
     await cerrarAjustes();

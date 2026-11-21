@@ -1278,9 +1278,9 @@ html.sl-activo[data-sl-movimiento="bajo"] *::after { transition: none !important
 
   /* The transcript stacks: name, state, then record and hours on one line, with the
      grade on the right. */
-  html.sl-activo table.sl-analitico thead { display: none; }
-  html.sl-activo table.sl-analitico tbody { display: block; }
-  html.sl-activo table.sl-analitico tr {
+  html.sl-activo table.sl-analitico:not(.sl-numeros) thead { display: none; }
+  html.sl-activo table.sl-analitico:not(.sl-numeros) tbody { display: block; }
+  html.sl-activo table.sl-analitico:not(.sl-numeros) tr {
     background-color: var(--sl-fila, transparent);
     border-bottom: 1px solid var(--sl-linea) !important;
     display: grid;
@@ -1288,14 +1288,17 @@ html.sl-activo[data-sl-movimiento="bajo"] *::after { transition: none !important
     grid-template-columns: auto minmax(0, 1fr) auto;
     padding: 8px 0;
   }
-  html.sl-activo table.sl-analitico tr:last-child { border-bottom: 0 !important; }
-  html.sl-activo table.sl-analitico tr:is(.sl-fuerte, .sl-suave) { padding-inline: 8px; }
-  html.sl-activo table.sl-analitico td { background-color: transparent !important; border: 0 !important; display: block; padding: 0 !important; width: auto !important; }
-  html.sl-activo table.sl-analitico td:empty { display: none; }
-  html.sl-activo table.sl-analitico td:is(.sl-materia-nombre, .sl-estado-texto) { grid-column: 1 / span 2; }
-  html.sl-activo table.sl-analitico td.sl-col-registro { grid-column: 1; }
-  html.sl-activo table.sl-analitico td.sl-col-hs { grid-column: 2; text-align: left; }
-  html.sl-activo table.sl-analitico td.sl-nota { grid-column: 3; grid-row: 1 / span 3; }
+  html.sl-activo table.sl-analitico:not(.sl-numeros) tr:last-child { border-bottom: 0 !important; }
+  html.sl-activo table.sl-analitico:not(.sl-numeros) tr:is(.sl-fuerte, .sl-suave) { padding-inline: 8px; }
+  html.sl-activo table.sl-analitico:not(.sl-numeros) td { background-color: transparent !important; border: 0 !important; display: block; padding: 0 !important; width: auto !important; }
+  html.sl-activo table.sl-analitico:not(.sl-numeros) td:empty { display: none; }
+  html.sl-activo table.sl-analitico:not(.sl-numeros) td:is(.sl-materia-nombre, .sl-estado-texto) { grid-column: 1 / span 2; }
+  html.sl-activo table.sl-analitico:not(.sl-numeros) td.sl-col-registro { grid-column: 1; }
+  html.sl-activo table.sl-analitico:not(.sl-numeros) td.sl-col-hs { grid-column: 2; text-align: left; }
+  html.sl-activo table.sl-analitico:not(.sl-numeros) td.sl-nota { grid-column: 3; grid-row: 1 / span 3; }
+  /* The number tables of the exams history keep their columns, tighter. */
+  html.sl-activo table.sl-numeros :is(th, td) { font-size: 0.8125rem !important; padding: 7px 4px !important; }
+  html.sl-activo table.sl-numeros thead th { font-size: 0.75rem !important; }
 }
 
 /* Template: Analítico. A printed document: rules instead of cards, nothing raised. */
@@ -1922,3 +1925,136 @@ html.sl-activo[data-sl-plantilla="tablero"] .wrapper:has(.sl-examenes, .sl-exame
   html.sl-activo[data-sl-plantilla="tablero"] .sl-examenes { align-items: start; column-gap: 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   html.sl-activo[data-sl-plantilla="tablero"] .sl-examenes > :not(.sl-examen-anio) { grid-column: 1 / -1; }
 }
+
+/* Menu: what comes next, under the two enrollment cards. */
+html.sl-activo .sl-viene {
+  background: var(--sl-superficie);
+  border-radius: var(--sl-radio);
+  box-shadow: var(--sl-sombra-tarjeta);
+  padding: 18px 20px;
+}
+
+html.sl-activo .sl-viene h2 { font-family: var(--sl-serif) !important; font-size: 1.3125rem !important; margin: 0 0 6px !important; }
+html.sl-activo .sl-viene ul { list-style: none; margin: 0 !important; padding: 0 !important; }
+
+html.sl-activo .sl-viene li {
+  align-items: baseline;
+  border-top: 1px solid var(--sl-linea);
+  display: grid;
+  gap: 4px 16px;
+  grid-template-columns: 7.5em minmax(0, 1fr);
+  margin: 0 !important;
+  padding: 10px 0;
+}
+
+html.sl-activo .sl-viene li:first-child { border-top: 0; }
+html.sl-activo .sl-viene-falta { color: var(--sl-acento) !important; font-variant-numeric: tabular-nums; font-weight: 700; }
+html.sl-activo .sl-viene li strong { display: block; font-weight: 600; overflow-wrap: anywhere; }
+html.sl-activo p.sl-viene-nota { color: var(--sl-texto-2) !important; font-size: 0.8125rem; margin: 6px 0 0 !important; }
+html.sl-activo .sl-viene li div > span { color: var(--sl-texto-2) !important; display: block; font-size: 0.9375rem; }
+
+@media (max-width: 520px) {
+  html.sl-activo .sl-viene li { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* "Descargar en Excel" */
+html.sl-activo .sl-descarga-pie { display: flex; justify-content: flex-end; margin: 4px 0 24px; }
+html.sl-activo a.sl-descargar:not(:has(img)) { min-width: 0; }
+
+/* "Lo que más te frena": directly or along the chain. */
+html.sl-activo .sl-frenos-modo { margin: 0 0 6px; }
+html.sl-activo p.sl-frenos-ayuda { color: var(--sl-texto-2) !important; font-size: 0.875rem; margin: 0 0 4px !important; }
+
+/* Exams: the history above Sysacad's table. */
+html.sl-activo .sl-historial { margin-bottom: 8px; }
+html.sl-activo .sl-promedio-suave { border-top-color: var(--sl-linea); }
+html.sl-activo .sl-promedio-suave strong { color: var(--sl-texto-2); font-size: 2.75rem; }
+
+html.sl-activo .sl-historial-cuerpo {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  margin-bottom: 28px;
+}
+
+html.sl-activo .sl-historial-cuerpo > .sl-anio { margin: 0; min-width: 0; padding-bottom: 14px; }
+html.sl-activo .sl-historial-cuerpo > .sl-grafico { grid-column: 1 / -1; }
+
+html.sl-activo .sl-historial-pie {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+html.sl-activo .sl-historial-pie h2 { font-family: var(--sl-serif) !important; font-size: 1.5rem !important; margin: 0 !important; }
+
+html.sl-activo table.sl-numeros :is(th, td) { font-variant-numeric: tabular-nums; }
+html.sl-activo table.sl-numeros td { text-align: right; }
+html.sl-activo table.sl-numeros tbody th {
+  border-bottom: 1px solid var(--sl-linea) !important;
+  font-size: inherit;
+  font-weight: 500;
+  padding: 10px 12px !important;
+  text-align: left;
+  vertical-align: baseline;
+}
+
+html.sl-activo table.sl-numeros tbody tr:last-child th { border-bottom: 0 !important; }
+html.sl-activo table.sl-numeros thead th:not(:first-child) { text-align: right; }
+html.sl-activo table.sl-numeros tr.sl-mejor :is(th, td) { font-weight: 700; }
+
+html.sl-activo .sl-grafico-marco { margin-top: 4px; min-width: 0; }
+html.sl-activo .sl-grafico-lienzo { display: block; overflow: visible; }
+html.sl-activo .sl-g-grilla { stroke: var(--sl-linea); stroke-width: 1; }
+html.sl-activo .sl-g-eje { fill: var(--sl-texto-2); font-family: var(--sl-fuente); font-size: 12px; font-variant-numeric: tabular-nums; }
+html.sl-activo .sl-g-nota { fill: var(--sl-regular); stroke: var(--sl-superficie); stroke-width: 2; }
+html.sl-activo .sl-g-linea { fill: none; stroke: var(--sl-acento); stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+html.sl-activo .sl-g-fin { fill: var(--sl-acento); stroke: var(--sl-superficie); stroke-width: 2; }
+html.sl-activo .sl-g-valor { fill: var(--sl-texto); font-family: var(--sl-fuente); font-size: 13px; font-weight: 700; }
+
+html.sl-activo .sl-g-leyenda {
+  color: var(--sl-texto-2);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.875rem;
+  gap: 4px 20px;
+  list-style: none;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+html.sl-activo .sl-g-leyenda li { align-items: center; display: inline-flex; gap: 8px; margin: 0 !important; }
+html.sl-activo .sl-g-leyenda li::before { content: ""; display: inline-block; }
+html.sl-activo .sl-g-l-linea::before { background: var(--sl-acento); border-radius: 1px; height: 2px; width: 18px; }
+html.sl-activo .sl-g-l-nota::before { background: var(--sl-regular); border-radius: 50%; height: 8px; width: 8px; }
+
+html.sl-activo .sl-reparto { list-style: none; margin: 4px 0 0 !important; padding: 0 !important; }
+
+html.sl-activo .sl-reparto li {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1.5em minmax(0, 1fr) 4.5em;
+  margin: 0 !important;
+  padding: 3px 0;
+}
+
+html.sl-activo .sl-reparto-nota { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+html.sl-activo .sl-reparto-barra { background: var(--sl-superficie-2); border-radius: 3px; display: block; height: 10px; overflow: hidden; }
+html.sl-activo .sl-reparto-barra i { background: var(--sl-barra-ok); display: block; height: 100%; }
+html.sl-activo .sl-reparto-aplazo .sl-reparto-barra i { background: var(--sl-barra-regular); }
+html.sl-activo .sl-reparto-cuenta { color: var(--sl-texto-2) !important; font-size: 0.875rem; font-variant-numeric: tabular-nums; }
+
+html.sl-activo .sl-intentos { list-style: none; margin: 0 !important; padding: 0 !important; }
+html.sl-activo .sl-intentos li { border-top: 1px solid var(--sl-linea); margin: 0 !important; padding: 8px 0; }
+html.sl-activo .sl-intentos li:first-child { border-top: 0; }
+html.sl-activo .sl-intentos strong { display: block; font-weight: 600; }
+html.sl-activo .sl-intentos span { color: var(--sl-texto-2) !important; font-size: 0.9375rem; }
+
+/* Prerequisites to enroll: the view by stages. */
+html.sl-activo .sl-etapas > h2 { font-family: var(--sl-serif) !important; font-size: 1.375rem; margin: 0 !important; }
+html.sl-activo .sl-etapas > p.sl-mapa-ayuda { margin-bottom: 16px !important; }
+html.sl-activo .sl-analitico .sl-col-anio { white-space: nowrap; width: 5em; }

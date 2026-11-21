@@ -268,12 +268,65 @@
 
   // The name on the menu lets Super CVG check the copies belong to the campus account. Another name means another
   // student in this browser: the copies of the previous one go away.
+  // Since 2.5.0 the name is kept whenever Super CVG is linked, also with the copies off: the exams use it too. The
+  // exams the student enrolled in belong to one student as well, so another name on the menu drops them.
   async function guardarAlumno(nombre) {
     const alumno = limpiarTexto(nombre, TOPES.alumno);
-    const s = await chrome.storage.local.get({ supercvgVinculado: false, supercvgGuardaPestanas: true, supercvgAlumno: null });
-    if (!alumno || s.supercvgVinculado !== true || s.supercvgGuardaPestanas !== true || s.supercvgAlumno === alumno) return;
+    if (!alumno) return;
+    const s = await chrome.storage.local.get({ supercvgVinculado: false, supercvgAlumno: null, alumnoMenu: null });
+    if (s.alumnoMenu !== alumno) {
+      if (s.alumnoMenu) await chrome.storage.local.remove('examenesInscriptos');
+      await guardar({ alumnoMenu: alumno });
+    }
+    if (s.supercvgVinculado !== true || s.supercvgAlumno === alumno) return;
     if (s.supercvgAlumno) await chrome.storage.local.remove('supercvgPestanas');
     await guardar({ supercvgAlumno: alumno });
+  }
+
+  // Dates for the menu's "Próximas fechas". Sysacad writes an exam day with no year ("jueves 10 de diciembre"): the year is
+  // the one among last, this and next where that day falls on that weekday, and there is never more than one.
+  // MESES and DIAS are further down, with the exam enrollment.
+  const dos = (n) => String(n).padStart(2, '0');
+  const isoDe = (fecha) => `${fecha.getFullYear()}-${dos(fecha.getMonth() + 1)}-${dos(fecha.getDate())}`;
+  const fechaDeIso = (iso) => {
+    const [a, m, d] = iso.split('-').map(Number);
+    return new Date(a, m - 1, d);
+  };
+  const diaDelExamen = (texto) => {
+    const partes = normalizar(texto).match(/^(domingo|lunes|martes|miercoles|jueves|viernes|sabado) (\d{1,2}) de ([a-z]+)$/);
+    const mes = partes ? MESES.indexOf(partes[3]) : -1;
+    if (mes === -1) return null;
+    const hoy = new Date().getFullYear();
+    const fechas = [hoy - 1, hoy, hoy + 1]
+      .map((anio) => new Date(anio, mes, Number(partes[2])))
+      .filter((f) => f.getMonth() === mes && normalizar(DIAS[f.getDay()]) === partes[1]);
+    return fechas.length === 1 ? isoDe(fechas[0]) : null;
+  };
+  const hora = (texto) => {
+    const partes = texto?.match(/^(\d{1,2})[:.](\d{2})$/);
+    return partes && Number(partes[1]) < 24 && Number(partes[2]) < 60 ? `${dos(partes[1])}:${partes[2]}` : null;
+  };
+  const examenGuardado = (materia, datos) => {
+    const dia = diaDelExamen(datos.dia);
+    const nombre = limpiarTexto(materia ?? '', 120);
+    if (!dia || !nombre) return null;
+    return {
+      materia: nombre,
+      dia,
+      turno: limpiarTexto(datos.turno ?? '', 20) || null,
+      teorico: hora(datos.teorico),
+      practico: hora(datos.practico),
+      tribunal: limpiarTexto(datos.tribunal ?? '', 80) || null,
+    };
+  };
+  // The certificate lists every enrollment and replaces what was kept; a receipt adds its own. Kept for the menu and,
+  // once linked, for Super CVG's calendar (docs/CONTRATO-SUPERCVG.md). Never the security code nor the mail.
+  async function guardarExamenes(nuevos, reemplazar) {
+    const { examenesInscriptos } = await chrome.storage.local.get({ examenesInscriptos: null });
+    const previos = !reemplazar && Array.isArray(examenesInscriptos?.examenes) ? examenesInscriptos.examenes : [];
+    const juntos = [...nuevos, ...previos].filter((e, i, todos) => todos.findIndex((o) => o.materia === e.materia && o.dia === e.dia) === i);
+    juntos.sort((a, b) => a.dia.localeCompare(b.dia));
+    await guardar({ examenesInscriptos: { fecha: Date.now(), examenes: juntos.slice(-30) } });
   }
 
   // Rows and list items that hold content, skipping layout rows that wrap nested tables.
@@ -387,6 +440,7 @@
     if (!avisos.length) return;
     form.parentElement.classList.add('sl-login-con-avisos');
     for (const aviso of avisos) aviso.classList.add('sl-aviso-login');
+    if (esPrincipal) guardarCronograma(avisos);
     // The menu saved the year of entry, so the schedule can point at the student's turn.
     chrome.storage.local.get({ anioIngreso: null }).then(({ anioIngreso }) => {
       if (!anioIngreso) return;
@@ -397,6 +451,67 @@
         if (Number(anioIngreso) === anio || (turno[2] && Number(anioIngreso) < anio)) parrafo.classList.add('sl-tu-turno');
       }
     });
+  }
+
+  // The login page shows Sysacad's enrollment schedule. The menu points at the student's own date, so it is kept.
+  function guardarCronograma(avisos) {
+    for (const aviso of avisos) {
+      const titulo = aviso.querySelector('.tituloTablaImportante')?.textContent.trim() ?? '';
+      if (!/^cronograma de /i.test(titulo)) continue;
+      const fechas = [...aviso.querySelectorAll('p')].map((p) => {
+        const quien = p.querySelector('strong')?.textContent.trim() ?? '';
+        const cuando = p.textContent.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s*\((\d{1,2})\s*hs?\))?/i);
+        if (!quien || !cuando) return null;
+        const fecha = new Date(Number(cuando[3]), Number(cuando[2]) - 1, Number(cuando[1]));
+        if (fecha.getDate() !== Number(cuando[1])) return null;
+        const turno = normalizar(quien).match(/^alumnos con ano de ingreso (\d{4})( y anteriores)?$/);
+        return {
+          dia: isoDe(fecha),
+          hora: cuando[4] ? Number(cuando[4]) : null,
+          ingreso: turno ? Number(turno[1]) : null,
+          anteriores: Boolean(turno?.[2]),
+          electivas: /electiva/i.test(quien),
+        };
+      }).filter(Boolean);
+      if (fechas.length) guardar({ cronograma: { titulo: limpiarTexto(titulo.replace(/^cronograma de /i, ''), 80), fechas } });
+      return;
+    }
+  }
+
+  // "Próximas fechas" on the menu: the student's enrollment turn and the exams they enrolled in, from what the login page
+  // and the enrollment pages showed. Counted from today when the menu opens, with no timer.
+  const diasHasta = (iso) => Math.round((fechaDeIso(iso) - fechaDeIso(isoDe(new Date()))) / 86400000);
+  const cuantoFalta = (dias) => (dias === 0 ? 'Hoy' : dias === 1 ? 'Mañana' : `En ${dias} días`);
+  const diaLargo = (iso) => fechaDeIso(iso).toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
+
+  async function loQueViene() {
+    const s = await chrome.storage.local.get({ cronograma: null, anioIngreso: null, examenesInscriptos: null });
+    const items = [];
+    const fechas = Array.isArray(s.cronograma?.fechas) ? s.cronograma.fechas : [];
+    const titulo = mayuscula(s.cronograma?.titulo ?? '');
+    const ingreso = Number(s.anioIngreso);
+    const mia = ingreso ? fechas.find((f) => f.ingreso === ingreso || (f.anteriores && ingreso < f.ingreso)) : null;
+    const desde = (f) => (f.hora === null ? null : `desde las ${f.hora}`);
+    const con = (cual) => (titulo ? `${titulo}: ${cual}` : mayuscula(cual));
+    if (mia) items.push({ dia: mia.dia, titulo: con('tu turno'), detalle: [desde(mia)] });
+    for (const f of fechas.filter((f) => f.electivas)) items.push({ dia: f.dia, titulo: con('electivas'), detalle: [desde(f)] });
+    for (const e of Array.isArray(s.examenesInscriptos?.examenes) ? s.examenesInscriptos.examenes : []) {
+      const horas = [e.teorico, e.practico].filter(Boolean).sort();
+      items.push({ dia: e.dia, titulo: `Examen de ${e.materia}`, detalle: [horas[0] ?? null, e.tribunal ? `tribunal ${e.tribunal}` : null] });
+    }
+    const proximos = items.filter((i) => diasHasta(i.dia) >= 0).sort((a, b) => a.dia.localeCompare(b.dia)).slice(0, 4);
+    if (!proximos.length) return null;
+    return h('section', { clase: 'sl-viene', 'aria-labelledby': 'sl-viene-titulo' },
+      h('h2', { id: 'sl-viene-titulo', texto: 'Próximas fechas' }),
+      h('ul', {}, ...proximos.map((i) => h('li', {},
+        h('span', { clase: 'sl-viene-falta', texto: cuantoFalta(diasHasta(i.dia)) }),
+        h('div', {},
+          h('strong', { texto: i.titulo }),
+          h('span', { texto: [mayuscula(diaLargo(i.dia)), ...i.detalle].filter(Boolean).join(' · ') }),
+        ),
+      ))),
+      h('p', { clase: 'sl-viene-nota', texto: 'Según lo último que abriste en Sysacad: el cronograma del login y tu certificado de exámenes.' }),
+    );
   }
 
   // Collapses the wrappers left empty after the original menu moves out.
@@ -492,6 +607,9 @@
       menu,
     );
     raiz.classList.add('sl-pagina-menu');
+    loQueViene().then((viene) => {
+      if (viene) (menu.querySelector('.sl-grupo-principal') ?? menu.querySelector('.sl-alumno')).after(viene);
+    });
     // Super CVG may be waiting for the grades: the card points at the menu's own link to Estado académico.
     const estado = enlaces.find((a) => normalizar(a.textContent) === 'estado academico');
     tarjetasDeVinculos({ estadoAcademico: estado?.origin === location.origin ? estado.href : null }).then(({ arriba }) => menu.append(...arriba));
@@ -543,6 +661,25 @@
   const decimal = (n) => n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const cantidad = (n, una, varias) => `${n} ${n === 1 ? una : varias}`;
   const anchoBarra = (parte, total) => `width: ${total ? (parte / total) * 100 : 0}%`;
+
+  // "Descargar en Excel": a plain link the student presses, with the file written into its address. The browser saves
+  // it and nothing is sent. Semicolons and a byte order mark, so Excel in Spanish opens it in columns and with accents.
+  const ESTADO_EN_SINGULAR = { aprobada: 'Aprobada', regular: 'Regular', pendiente: 'Sin cursar' };
+  const ICONO_DESCARGAR =icono('<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>');
+  const enlaceCsv = (nombre, filas, etiqueta) => {
+    const celda = (valor) => {
+      const crudo = typeof valor === 'number' ? String(valor).replace('.', ',') : String(valor ?? '');
+      // A cell that starts like a formula stays text in Excel.
+      const t = /^[=+@]/.test(crudo) ? `'${crudo}` : crudo;
+      return /[";\r\n]/.test(t) ? `"${t.replaceAll('"', '""')}"` : t;
+    };
+    const csv = `\ufeff${filas.map((f) => f.map(celda).join(';')).join('\r\n')}\r\n`;
+    return h('a', {
+      clase: 'sl-boton-secundario sl-descargar',
+      href: `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`,
+      download: `${nombre}-${isoDe(new Date())}.csv`,
+    }, parsear(ICONO_DESCARGAR), etiqueta);
+  };
 
   // The academic record page: read-only, so it can be rebuilt from its table. The
   // original stays in the page, hidden, and is what gets parsed.
@@ -896,9 +1033,15 @@
       ] },
     ]);
 
+    const tipoDe = (m) => (m.electiva ? 'Electiva' : m.opcional ? 'Complementaria' : 'Obligatoria');
+    const descarga = enlaceCsv('estado-academico', [
+      ['Año', 'Materia', 'Tipo', 'Estado', 'Cuándo', 'Nota', 'Horas', 'Registro'],
+      ...materias.map((m) => [m.anio, m.nombre, tipoDe(m), m.tipo === 'otro' ? m.crudo : ESTADO_EN_SINGULAR[m.tipo], m.cuando, m.nota, m.horas || '', m.registro]),
+    ], 'Descargar en Excel');
+
     const vista = h('div', { clase: 'sl-estado' },
       h('div', { clase: 'sl-estado-lado' }, tablero, filtros),
-      h('div', { clase: 'sl-estado-cuerpo' }, ...secciones.map((s) => s.seccion), sinResultados, anuncio),
+      h('div', { clase: 'sl-estado-cuerpo' }, ...secciones.map((s) => s.seccion), sinResultados, anuncio, h('div', { clase: 'sl-descarga-pie' }, descarga)),
     );
 
     let exterior = tabla;
@@ -1200,6 +1343,8 @@
       const nombre = crudo?.replaceAll('+', ' ').replace(/%([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
       if (nombre) materia = nombreEntero(nombre.trim());
     } catch { /* no previous page */ }
+    const examen = examenGuardado(materia, datos);
+    if (examen) guardarExamenes([examen], false);
     const tabla = tablaExterior(parrafo);
     tabla.before(h('section', { clase: 'sl-comprobante sl-comprobante-listo' },
       h('div', { clase: 'sl-comprobante-cabeza' },
@@ -1227,6 +1372,7 @@
     const celdas = [...document.querySelectorAll('td')].filter((td) => /C[oó]digo de seguridad/i.test(td.textContent) && !td.querySelector('td'));
     const inscripciones = celdas.map((td) => ({ materia: td.querySelector('b')?.textContent.trim(), datos: datosDeInscripcion(lineasDe(td)) }));
     if (!inscripciones.length || inscripciones.some((i) => !i.materia || !i.datos)) return;
+    guardarExamenes(inscripciones.map(({ materia, datos }) => examenGuardado(nombreEntero(materia), datos)).filter(Boolean), true);
     const tabla = tablaExterior(celdas[0]);
     tabla.before(h('section', { clase: 'sl-comprobantes', 'aria-label': 'Exámenes en los que estás inscripto' },
       ...inscripciones.map(({ materia, datos }) => h('article', { clase: 'sl-comprobante' },
@@ -1411,7 +1557,7 @@
       texto: 'Empezar de nuevo',
       onclick: soloClicReal(() => {
         supuestas.clear();
-        if (document.activeElement === reiniciar) (botonesFreno[0]?.boton ?? materias[0].nodo).focus();
+        if (document.activeElement === reiniciar) (botonesFreno.find((b) => b.boton.offsetParent)?.boton ?? materias[0].nodo).focus();
         actualizar();
       }),
     });
@@ -1541,14 +1687,91 @@
         : `Si sacás ${sacadas}, todavía no se te libera ninguna.`;
     };
 
+    // Cursado por etapas, only to enroll: stage 1 is what the student can take now, and each next stage what frees up
+    // once the previous one is regular. A requirement outside the page (a final still to pass) or the elective hours
+    // count as one stage. The longest chain among the career's own subjects is the least that is left.
+    let etapas = null;
+    let resumenEtapas = null;
+    let seccionesEtapa = [];
+    if (verbo === 'cursar') {
+      const etapaDe = new Map();
+      const calcular = (m, camino) => {
+        if (etapaDe.has(m)) return etapaDe.get(m);
+        if (m.puede) {
+          etapaDe.set(m, 1);
+          return 1;
+        }
+        // A loop in the requirements would never end: it counts as one more stage.
+        if (camino.has(m)) return 2;
+        camino.add(m);
+        const previas = m.reqs.filter((r) => r.materia && r.materia !== m).map((r) => calcular(r.materia, camino));
+        camino.delete(m);
+        etapaDe.set(m, 1 + Math.max(1, ...previas));
+        return etapaDe.get(m);
+      };
+      for (const m of materias) m.etapa = calcular(m, new Set());
+
+      const obligatorias = materias.filter((m) => !m.electiva);
+      const cuantas = Math.max(0, ...obligatorias.map((m) => m.etapa));
+      const cadena = [];
+      for (let paso = obligatorias.find((m) => m.etapa === cuantas); paso;) {
+        cadena.unshift(paso);
+        const actual = paso;
+        paso = actual.reqs.map((r) => r.materia).find((o) => o && o !== actual && o.etapa === actual.etapa - 1);
+      }
+
+      const numeros = [...new Set(materias.map((m) => m.etapa))].sort((a, b) => a - b);
+      seccionesEtapa = numeros.map((n) => {
+        const propias = materias.filter((m) => m.etapa === n).sort((a, b) => a.electiva - b.electiva || Number(a.anio) - Number(b.anio));
+        for (const m of propias) {
+          m.filaEtapa = h('tr', { clase: `sl-etapa-fila ${m.puede ? 'sl-e-aprobada' : 'sl-e-otro'}` },
+            h('td', { clase: 'sl-materia-nombre', texto: m.nombre }),
+            h('td', { clase: 'sl-dato sl-col-anio', texto: nombreAnio(m.anio) }),
+            h('td', { clase: 'sl-estado-texto sl-col-falta', texto: m.puede
+              ? (frenos.get(m.clave) ? `Frena ${cantidad(frenos.get(m.clave).cuenta, 'materia', 'materias')}` : '')
+              : m.faltan.join(SEPARADOR) || 'Sin datos' }),
+          );
+        }
+        const seccion = h('section', { clase: 'sl-anio' },
+          h('div', { clase: 'sl-anio-cabeza' },
+            h('h2', { texto: n === 1 ? 'Ya podés cursar' : `Etapa ${n}` }),
+            h('span', { texto: cantidad(propias.length, 'materia', 'materias') }),
+          ),
+          h('table', { clase: 'sl-analitico' },
+            h('thead', {}, h('tr', {},
+              h('th', { scope: 'col', texto: 'Materia' }),
+              h('th', { scope: 'col', clase: 'sl-col-anio', texto: 'Año' }),
+              h('th', { scope: 'col', clase: 'sl-col-falta', texto: n === 1 ? 'Qué destraba' : 'Qué te falta' }),
+            )),
+            h('tbody', {}, ...propias.map((m) => m.filaEtapa)),
+          ),
+        );
+        return { seccion, propias };
+      });
+      etapas = h('section', { clase: 'sl-etapas sl-filtrada', 'aria-labelledby': 'sl-etapas-titulo' },
+        h('h2', { id: 'sl-etapas-titulo', texto: 'Cursado por etapas' }),
+        h('p', { clase: 'sl-mapa-ayuda', texto: 'Cada etapa es lo que se libera al regularizar la anterior. Dura un cuatrimestre o un año, según la materia.' }),
+        ...seccionesEtapa.map((e) => e.seccion),
+      );
+      if (cuantas) {
+        resumenEtapas = h('div', { clase: 'sl-tarjeta-electivas sl-tarjeta-etapas' },
+          h('p', { clase: 'sl-tarjeta-titulo', texto: 'Lo que te queda' }),
+          h('p', { clase: 'sl-electivas', texto: cuantas === 1
+            ? 'Podés cursar ya todo lo que te falta de la carrera.'
+            : `Al menos ${cuantas} etapas de cursado. La cadena más larga: ${cadena.map((m) => m.nombre).join(' → ')}.` }),
+        );
+      }
+    }
+
     const filtro = { vista: null, anio: null, puede: null, tipo: null, texto: '' };
     const sinResultados = h('p', { clase: 'sl-sin-resultados sl-filtrada', texto: 'Ninguna materia coincide. Probá con otro filtro.' });
     const anuncio = h('p', { clase: 'sl-anuncio', role: 'status' });
     const lista = h('div', { clase: 'sl-lista' }, ...secciones.map((s) => s.seccion));
     for (const m of materias) m.li.slNodo = m.nodo;
     const aplicar = () => {
-      lista.classList.toggle('sl-filtrada', filtro.vista === 'mapa');
+      lista.classList.toggle('sl-filtrada', filtro.vista !== null);
       mapa.classList.toggle('sl-filtrada', filtro.vista !== 'mapa');
+      etapas?.classList.toggle('sl-filtrada', filtro.vista !== 'etapas');
       let visibles = 0;
       for (const { anio, seccion, items } of secciones) {
         let enSeccion = 0;
@@ -1559,18 +1782,20 @@
             (filtro.tipo === null || filtro.tipo === m.electiva) &&
             (!filtro.texto || normalizar(m.nombre).includes(filtro.texto));
           li.classList.toggle('sl-filtrada', !ok);
+          m.filaEtapa?.classList.toggle('sl-filtrada', !ok);
           m.nodo.classList.toggle('sl-atenuada', !ok);
           if (ok) enSeccion += 1;
         }
         seccion.classList.toggle('sl-filtrada', !enSeccion);
         visibles += enSeccion;
       }
+      for (const { seccion, propias } of seccionesEtapa) seccion.classList.toggle('sl-filtrada', propias.every((m) => m.filaEtapa.classList.contains('sl-filtrada')));
       sinResultados.classList.toggle('sl-filtrada', visibles > 0);
       anuncio.textContent = visibles ? cantidad(visibles, 'materia', 'materias') : 'Sin resultados';
     };
 
     const filtros = barraDeFiltros(filtro, aplicar, 'Buscar materia', [
-      { etiqueta: 'Cambiar vista', visible: 'Ver', clave: 'vista', opciones: [{ valor: null, texto: 'Lista' }, { valor: 'mapa', texto: 'Mapa' }] },
+      { etiqueta: 'Cambiar vista', visible: 'Ver', clave: 'vista', opciones: [{ valor: null, texto: 'Lista' }, { valor: 'mapa', texto: 'Mapa' }, ...(etapas ? [{ valor: 'etapas', texto: 'Etapas' }] : [])] },
       { etiqueta: 'Filtrar por año', visible: 'Año', clave: 'anio', opciones: [{ valor: null, texto: 'Todos' }, ...anios.map((a) => ({ valor: a, texto: nombreAnio(a) }))] },
       { etiqueta: 'Filtrar por situación', visible: 'Situación', clave: 'puede', opciones: [
         { valor: null, texto: 'Todas' },
@@ -1584,7 +1809,22 @@
       ] },
     ]);
 
+    // Each subject counts the ones it holds back directly or, along the chain, also what those hold back in turn.
+    const enCadenaDe = (clave) => {
+      const trabadas = new Set();
+      const pendientes = [clave];
+      while (pendientes.length) {
+        const actual = pendientes.pop();
+        for (const m of materias) {
+          if (m.clave === clave || trabadas.has(m) || !m.reqs.some((r) => r.clave === actual)) continue;
+          trabadas.add(m);
+          pendientes.push(m.clave);
+        }
+      }
+      return trabadas.size;
+    };
     const ordenFrenos = [...frenos.values()].sort((a, b) => b.cuenta - a.cuenta);
+    const ordenCadena = ordenFrenos.map((f) => ({ ...f, cuenta: Math.max(f.cuenta, enCadenaDe(f.clave)) })).sort((a, b) => b.cuenta - a.cuenta);
     const itemFreno = ({ clave, texto, cuenta }) => {
       const boton = h('button', { clase: 'sl-freno', type: 'button', 'aria-pressed': 'false', onclick: soloClicReal(() => alternar(clave)) },
         h('span', { texto }),
@@ -1593,18 +1833,44 @@
       botonesFreno.push({ clave, boton });
       return h('li', {}, boton);
     };
+    const listaFrenos = (orden, ayuda) => h('div', { clase: 'sl-frenos-vista' },
+      ayuda ? h('p', { clase: 'sl-frenos-ayuda', texto: ayuda }) : null,
+      h('ul', { clase: 'sl-frenos' }, ...orden.slice(0, 3).map(itemFreno)),
+      orden.length > 3 ? h('details', { clase: 'sl-faltan-mas' },
+        h('summary', { texto: `Ver ${orden.length - 3} más` }),
+        h('ul', { clase: 'sl-frenos' }, ...orden.slice(3).map(itemFreno)),
+      ) : null,
+    );
+    const vistasFreno = [
+      listaFrenos(ordenFrenos, 'Las materias que dependen directo de cada una.'),
+      listaFrenos(ordenCadena, 'Suma también lo que frenan, a su vez, esas materias.'),
+    ];
+    vistasFreno[1].classList.add('sl-filtrada');
+    const botonesModo = ['Directas', 'En cadena'].map((texto, i) => h('button', {
+      clase: 'sl-chip',
+      type: 'button',
+      'aria-pressed': String(i === 0),
+      texto,
+      onclick: soloClicReal(() => {
+        botonesModo.forEach((b, j) => b.setAttribute('aria-pressed', String(i === j)));
+        vistasFreno.forEach((v, j) => v.classList.toggle('sl-filtrada', i !== j));
+      }),
+    }));
+    const modosFreno = h('div', { clase: 'sl-chips sl-frenos-modo', role: 'group', 'aria-label': 'Cómo contar lo que frena' },
+      h('span', { clase: 'sl-chips-titulo', 'aria-hidden': 'true', texto: 'Contar' }),
+      ...botonesModo,
+    );
+
     const tablero = h('section', { clase: 'sl-tablero', 'aria-label': 'Resumen' },
       h('div', { clase: 'sl-promedio' },
         h('strong', { texto: String(pueden(materias)) }),
         h('span', { texto: `de ${materias.length} podés ${verbo}` }),
       ),
+      resumenEtapas,
       ordenFrenos.length ? h('div', { clase: 'sl-avance sl-simulador' },
         h('p', { clase: 'sl-avance-titulo', texto: 'Lo que más te frena' }),
-        h('ul', { clase: 'sl-frenos' }, ...ordenFrenos.slice(0, 3).map(itemFreno)),
-        ordenFrenos.length > 3 ? h('details', { clase: 'sl-faltan-mas' },
-          h('summary', { texto: `Ver ${ordenFrenos.length - 3} más` }),
-          h('ul', { clase: 'sl-frenos' }, ...ordenFrenos.slice(3).map(itemFreno)),
-        ) : null,
+        modosFreno,
+        ...vistasFreno,
         resultado,
         reiniciar,
       ) : null,
@@ -1618,7 +1884,7 @@
 
     const vista = h('div', { clase: 'sl-estado' },
       h('div', { clase: 'sl-estado-lado' }, tablero, filtros),
-      h('div', { clase: 'sl-estado-cuerpo' }, mapa, lista, sinResultados, anuncio),
+      h('div', { clase: 'sl-estado-cuerpo' }, mapa, etapas, lista, sinResultados, anuncio),
     );
     actualizar();
     let exterior = tabla;
@@ -1646,6 +1912,239 @@
     if (typeof a === 'number' && typeof b === 'number') return a - b;
     if (typeof a === 'number' || typeof b === 'number') return typeof a === 'number' ? -1 : 1;
     return String(a).localeCompare(String(b), 'es');
+  }
+
+  // Exámenes lists every final with its date, fails and absences included. Above the table goes what it tells: the
+  // average over time, each year and exam period, how the grades spread and what took more than one try. The table
+  // stays as it is, with its search and sorting.
+  // A final passes with 6 since Ordinance 1549 of UTN, applied from 2017; before, with 4.
+  const apruebaCon = (fecha) => (fecha.getFullYear() >= 2017 ? 6 : 4);
+  const TURNOS = [['Febrero y marzo', [2, 3]], ['Julio y agosto', [7, 8]], ['Noviembre y diciembre', [11, 12]]];
+  const turnoDe = (fecha) => TURNOS.find(([, meses]) => meses.includes(fecha.getMonth() + 1))?.[0] ?? 'Otras mesas';
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const trazo = (etiqueta, atributos = {}, ...hijos) => {
+    const el = document.createElementNS(SVG_NS, etiqueta);
+    for (const [clave, valor] of Object.entries(atributos)) el.setAttribute(clave, valor);
+    el.append(...hijos);
+    return el;
+  };
+
+  function mejorarExamenes() {
+    if (pagina !== '/examenes.asp') return;
+    const tabla = [...document.querySelectorAll('table.sl-datos')].find((t) => {
+      const cabecera = t.querySelector('tr.sl-cabecera');
+      const titulos = cabecera ? [...cabecera.cells].map((c) => normalizar(c.textContent)) : [];
+      return ['fecha', 'materia', 'nota'].every((n) => titulos.includes(n)) && !t.querySelector('input, select, textarea');
+    });
+    if (!tabla) return;
+    const cabecera = tabla.querySelector('tr.sl-cabecera');
+    const titulos = [...cabecera.cells].map((c) => normalizar(c.textContent));
+    const examenes = filasDe(tabla)
+      .filter((f) => f !== cabecera && f.cells.length === cabecera.cells.length)
+      .map((f) => {
+        const celda = (n) => (titulos.includes(n) ? f.cells[titulos.indexOf(n)].textContent.trim() : '');
+        const partes = celda('fecha').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+        if (!partes || !celda('materia')) return null;
+        const fecha = new Date(Number(partes[3]), Number(partes[2]) - 1, Number(partes[1]));
+        const crudo = celda('nota');
+        const enLetras = NOTAS_EN_LETRAS.indexOf(normalizar(crudo));
+        const numero = enLetras !== -1 ? enLetras : /^\d{1,2}([.,]\d+)?$/.test(crudo) ? Number(crudo.replace(',', '.')) : null;
+        const nota = numero !== null && numero <= 10 ? numero : null;
+        return {
+          fila: f,
+          fecha,
+          crudo,
+          nota,
+          materia: nombreEntero(celda('materia')),
+          clave: celda('codigo') ? `${celda('plan')} ${celda('codigo')}` : normalizar(celda('materia')),
+          plan: celda('plan'),
+          codigo: celda('codigo'),
+          ausente: /^ausen/i.test(crudo),
+          aprobado: nota !== null && nota >= apruebaCon(fecha),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.fecha - b.fecha);
+    // Sysacad writes the grades in words ("ocho") and cuts absences ("Ausen."): the table shows numbers instead. The
+    // copy for Super CVG was taken before, from the original.
+    const columnaNota = titulos.indexOf('nota');
+    for (const e of examenes) {
+      const celda = e.fila.cells[columnaNota];
+      if (e.nota !== null) celda.textContent = String(e.nota).replace('.', ',');
+      else if (/^ausen/i.test(e.crudo)) celda.textContent = 'Ausente';
+    }
+    if (examenes.length < 2) return;
+
+    const conNota = examenes.filter((e) => e.nota !== null);
+    const aprobados = conNota.filter((e) => e.aprobado);
+    const esAplazo = (e) => e.nota !== null && !e.aprobado;
+    const aplazos = conNota.filter(esAplazo);
+    const ausentes = examenes.filter((e) => e.ausente);
+    const promedio = (lista) => (lista.length ? lista.reduce((s, e) => s + e.nota, 0) / lista.length : null);
+    const conComa = (n) => String(n).replace('.', ',');
+    const resultado = (e) => (e.ausente ? 'Ausente' : e.nota === null ? e.crudo : e.aprobado ? 'Aprobado' : 'Aplazo');
+    const textoNota = (e) => (e.nota !== null ? conComa(e.nota) : e.ausente ? 'ausente' : e.crudo.toLowerCase());
+
+    const tablero = h('section', { clase: 'sl-tablero', 'aria-label': 'Resumen' },
+      aprobados.length ? h('div', { clase: 'sl-promedio' },
+        h('strong', { texto: decimal(promedio(aprobados)) }),
+        h('span', { texto: 'Promedio sin aplazos' }),
+      ) : null,
+      aplazos.length ? h('div', { clase: 'sl-promedio sl-promedio-suave' },
+        h('strong', { texto: decimal(promedio(conNota)) }),
+        h('span', { texto: 'Con aplazos' }),
+      ) : null,
+      h('div', { clase: 'sl-avance' },
+        h('p', { clase: 'sl-avance-titulo', texto: `${aprobados.length} de ${cantidad(examenes.length, 'examen', 'exámenes')} aprobados` }),
+        h('div', { clase: 'sl-barra', role: 'img', 'aria-label': `${aprobados.length} aprobados, ${aplazos.length} aplazos y ${ausentes.length} ausentes` },
+          h('i', { clase: 'sl-b-aprobada', style: anchoBarra(aprobados.length, examenes.length) }),
+          h('i', { clase: 'sl-b-regular', style: anchoBarra(aplazos.length, examenes.length) }),
+        ),
+        h('p', { clase: 'sl-leyenda' },
+          h('span', {}, h('b', { texto: String(aplazos.length) }), aplazos.length === 1 ? ' aplazo' : ' aplazos'),
+          h('span', {}, h('b', { texto: String(ausentes.length) }), ausentes.length === 1 ? ' ausente' : ' ausentes'),
+        ),
+      ),
+    );
+
+    const tarjeta = (titulo, bajada, ...cuerpo) => h('section', { clase: 'sl-anio' },
+      h('div', { clase: 'sl-anio-cabeza' }, h('h2', { texto: titulo }), bajada ? h('span', { texto: bajada }) : null),
+      ...cuerpo,
+    );
+    const tablaDe = (columnas, filas) => h('table', { clase: 'sl-analitico sl-numeros' },
+      h('thead', {}, h('tr', {}, ...columnas.map((c) => h('th', { scope: 'col', texto: c })))),
+      h('tbody', {}, ...filas),
+    );
+    const fila = (celdas, clase = null) => h('tr', { clase }, ...celdas.map((c, i) => h(i ? 'td' : 'th', i ? {} : { scope: 'row' }, String(c ?? ''))));
+
+    // The average over time: each passed final is a dot, and the line is the average up to it.
+    let grafico = null;
+    if (aprobados.length >= 2) {
+      let suma = 0;
+      const puntos = aprobados.map((e, i) => {
+        suma += e.nota;
+        return { e, acumulado: suma / (i + 1) };
+      });
+      const svg = trazo('svg', { class: 'sl-grafico-lienzo', role: 'img', 'aria-label': `Tu promedio pasó de ${decimal(puntos[0].acumulado)} a ${decimal(puntos.at(-1).acumulado)} en ${cantidad(puntos.length, 'final aprobado', 'finales aprobados')}` });
+      const marco = h('div', { clase: 'sl-grafico-marco' }, svg);
+      const ALTO = 220;
+      const margen = { izq: 30, der: 44, arr: 12, aba: 26 };
+      const minimo = Math.min(4, Math.floor(Math.min(...aprobados.map((e) => e.nota))));
+      const dibujar = () => {
+        const ancho = marco.clientWidth;
+        if (!ancho) return;
+        svg.setAttribute('viewBox', `0 0 ${ancho} ${ALTO}`);
+        svg.setAttribute('width', String(ancho));
+        svg.setAttribute('height', String(ALTO));
+        svg.replaceChildren();
+        const t0 = puntos[0].e.fecha.getTime();
+        const t1 = Math.max(puntos.at(-1).e.fecha.getTime(), t0 + 86400000);
+        const x = (t) => margen.izq + ((t - t0) / (t1 - t0)) * (ancho - margen.izq - margen.der);
+        const y = (v) => margen.arr + ((10 - v) / (10 - minimo)) * (ALTO - margen.arr - margen.aba);
+        for (let v = 10; v >= minimo; v -= 2) {
+          svg.append(
+            trazo('line', { class: 'sl-g-grilla', x1: margen.izq, x2: ancho - margen.der, y1: y(v), y2: y(v) }),
+            trazo('text', { class: 'sl-g-eje', x: margen.izq - 8, y: y(v) + 4, 'text-anchor': 'end' }, String(v)),
+          );
+        }
+        const primero = puntos[0].e.fecha.getFullYear();
+        const ultimo = puntos.at(-1).e.fecha.getFullYear();
+        for (let anio = primero; anio <= ultimo; anio += 1) {
+          const t = anio === primero ? t0 : new Date(anio, 0, 1).getTime();
+          svg.append(trazo('text', { class: 'sl-g-eje', x: x(t), y: ALTO - 6, 'text-anchor': anio === primero ? 'start' : 'middle' }, String(anio)));
+        }
+        for (const { e } of puntos) {
+          svg.append(trazo('circle', { class: 'sl-g-nota', cx: x(e.fecha.getTime()), cy: y(e.nota), r: 4 },
+            trazo('title', {}, `${e.fecha.toLocaleDateString('es-AR')}: ${e.materia}, ${conComa(e.nota)}`)));
+        }
+        const camino = puntos.map((p, i) => `${i ? 'L' : 'M'}${x(p.e.fecha.getTime()).toFixed(1)} ${y(p.acumulado).toFixed(1)}`).join('');
+        const fin = puntos.at(-1);
+        svg.append(
+          trazo('path', { class: 'sl-g-linea', d: camino }),
+          trazo('circle', { class: 'sl-g-fin', cx: x(fin.e.fecha.getTime()), cy: y(fin.acumulado), r: 4.5 }),
+          trazo('text', { class: 'sl-g-valor', x: x(fin.e.fecha.getTime()) + 8, y: y(fin.acumulado) + 4 }, decimal(fin.acumulado)),
+        );
+      };
+      new ResizeObserver(dibujar).observe(marco);
+      grafico = tarjeta('Tu promedio en el tiempo', null,
+        h('ul', { clase: 'sl-g-leyenda', 'aria-hidden': 'true' },
+          h('li', { clase: 'sl-g-l-linea', texto: 'Promedio hasta ese final' }),
+          h('li', { clase: 'sl-g-l-nota', texto: 'Nota de cada final aprobado' }),
+        ),
+        marco,
+        h('p', { clase: 'sl-mapa-ayuda', texto: 'Cada final, con su fecha y su nota, está en la tabla de abajo.' }),
+      );
+      grafico.classList.add('sl-grafico');
+    }
+
+    // Each year and each exam period, with the best year when there are at least two to compare.
+    const resumen = (lista) => {
+      const apr = lista.filter((e) => e.aprobado);
+      return { total: lista.length, apr: apr.length, aplazos: lista.filter(esAplazo).length, ausentes: lista.filter((e) => e.ausente).length, promedio: promedio(apr) };
+    };
+    const anios = [...new Set(examenes.map((e) => e.fecha.getFullYear()))].map((anio) => ({ anio, ...resumen(examenes.filter((e) => e.fecha.getFullYear() === anio)) }));
+    const comparables = anios.filter((a) => a.apr >= 2);
+    const mejor = comparables.length >= 2 ? comparables.reduce((m, a) => (a.promedio > m.promedio ? a : m)) : null;
+    const porAnio = tarjeta('Año por año', mejor ? `Tu mejor año: ${mejor.anio}, con ${decimal(mejor.promedio)}` : null,
+      tablaDe(['Año', 'Exámenes', 'Aprobados', 'Aplazos', 'Ausentes', 'Promedio'],
+        anios.map((a) => fila([a.anio, a.total, a.apr, a.aplazos, a.ausentes, a.promedio === null ? '' : decimal(a.promedio)], a === mejor ? 'sl-mejor' : null))),
+    );
+
+    const turnos = [...TURNOS.map(([nombre]) => nombre), 'Otras mesas']
+      .map((nombre) => ({ nombre, ...resumen(examenes.filter((e) => turnoDe(e.fecha) === nombre)) }))
+      .filter((t) => t.total);
+    const medibles = turnos.filter((t) => t.total >= 3);
+    const mejorTurno = medibles.length >= 2 ? medibles.reduce((m, t) => (t.apr / t.total > m.apr / m.total ? t : m)) : null;
+    const porTurno = tarjeta('Por turno', mejorTurno ? `Donde más aprobás: ${mejorTurno.nombre.toLowerCase()}` : null,
+      tablaDe(['Turno', 'Exámenes', 'Aprobados', 'Ausentes', 'Promedio'],
+        turnos.map((t) => fila([t.nombre, t.total, t.apr, t.ausentes, t.promedio === null ? '' : decimal(t.promedio)], t === mejorTurno ? 'sl-mejor' : null))),
+    );
+
+    // How the grades spread, from the lowest one to 10.
+    let reparto = null;
+    if (conNota.length) {
+      const enteras = conNota.map((e) => Math.round(e.nota));
+      const soloAplazos = (nota) => conNota.filter((e) => Math.round(e.nota) === nota).every(esAplazo);
+      const desde = Math.min(...enteras);
+      const cuentas = Array.from({ length: 11 - desde }, (_, i) => 10 - i).map((nota) => ({ nota, cuenta: enteras.filter((n) => n === nota).length }));
+      const tope = Math.max(...cuentas.map((c) => c.cuenta));
+      reparto = tarjeta('Tus notas', `${cantidad(conNota.length, 'final con nota', 'finales con nota')}`,
+        h('ul', { clase: 'sl-reparto' }, ...cuentas.map(({ nota, cuenta }) => h('li', { clase: cuenta && soloAplazos(nota) ? 'sl-reparto-aplazo' : null },
+          h('span', { clase: 'sl-reparto-nota', texto: String(nota) }),
+          h('span', { clase: 'sl-reparto-barra', 'aria-hidden': 'true' }, h('i', { style: anchoBarra(cuenta, tope) })),
+          h('span', { clase: 'sl-reparto-cuenta', texto: cuenta === 1 ? '1 vez' : `${cuenta} veces` }),
+        ))),
+      );
+    }
+
+    // The subjects that took more than one try, with each try in order.
+    const porMateria = new Map();
+    for (const e of examenes) porMateria.set(e.clave, [...(porMateria.get(e.clave) ?? []), e]);
+    const repetidas = [...porMateria.values()].filter((l) => l.length > 1).sort((a, b) => b.length - a.length || a[0].fecha - b[0].fecha);
+    const itemIntento = (lista) => h('li', {},
+      h('strong', { texto: lista.at(-1).materia }),
+      h('span', { texto: `${lista.length} veces: ${lista.map(textoNota).join(', ')}` }),
+    );
+    const intentos = repetidas.length ? tarjeta('Las que más vueltas te dieron', null,
+      h('ul', { clase: 'sl-intentos' }, ...repetidas.slice(0, 5).map(itemIntento)),
+      repetidas.length > 5 ? h('details', { clase: 'sl-faltan-mas' },
+        h('summary', { texto: `Ver ${repetidas.length - 5} más` }),
+        h('ul', { clase: 'sl-intentos' }, ...repetidas.slice(5).map(itemIntento)),
+      ) : null,
+    ) : null;
+
+    const descarga = enlaceCsv('examenes', [
+      ['Fecha', 'Materia', 'Nota', 'Resultado', 'Plan', 'Código'],
+      ...examenes.map((e) => [`${dos(e.fecha.getDate())}/${dos(e.fecha.getMonth() + 1)}/${e.fecha.getFullYear()}`, e.materia, e.nota ?? '', resultado(e), e.plan, e.codigo]),
+    ], 'Descargar en Excel');
+
+    const vista = h('div', { clase: 'sl-historial' },
+      tablero,
+      h('div', { clase: 'sl-historial-cuerpo' }, grafico, porAnio, porTurno, reparto, intentos),
+      h('div', { clase: 'sl-historial-pie' }, h('h2', { texto: 'Todos tus exámenes' })),
+    );
+    tablaExterior(tabla).before(vista);
+    tablaExterior(tabla).after(h('div', { clase: 'sl-descarga-pie' }, descarga));
   }
 
   // Any other long table gets search, filters for its repetitive columns and sortable
@@ -2027,7 +2526,8 @@
 
       // The copies of the tabs for Super CVG, only while it is linked.
       const pestanas = interruptor('supercvgGuardaPestanas', a.supercvgGuardaPestanas, 'Guardar las pestañas que abrís', 'Así las ves en Super\u00a0CVG. Apagarlo borra lo guardado.', (activo) => {
-        if (!activo) chrome.storage.local.remove(['supercvgPestanas', 'supercvgAlumno']);
+        // The name stays: the exams for Super CVG's calendar use it too.
+        if (!activo) chrome.storage.local.remove('supercvgPestanas');
       });
       pestanas.classList.add('sub');
       pestanas.hidden = !a.supercvgVinculado;
@@ -2353,6 +2853,7 @@
     mejorarFechasDeExamen();
     mejorarInscripcionHecha();
     mejorarCertificadoDeExamenes();
+    mejorarExamenes();
     mejorarTablas();
     envolverTablas();
   }

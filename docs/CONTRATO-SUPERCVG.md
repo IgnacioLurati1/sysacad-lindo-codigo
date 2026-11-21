@@ -96,3 +96,60 @@ promesa, pero Super CVG lo rearma si llega otro. Cualquier otra clave, forma o t
   menú.
 - Salir en Super CVG manda `olvidar-pestanas`.
 - Si la extensión contesta la `v: 1` pero no la `v: 2` en un momento, es una versión vieja: «Actualizá Sysacad Lindo».
+
+# Exámenes inscriptos para el calendario de Super CVG (desde la 2.5.0)
+
+Acordado con la sesión de Super CVG el 19/11/2026. Super CVG suma a su calendario los exámenes en los que el alumno está
+inscripto.
+
+## Cuándo se guarda
+
+- Se guardan siempre, en el marco principal, porque también los usa «Próximas fechas» del menú. Solo se le pasan a Super
+  CVG con `supercvgVinculado`. No depende de «Guardar las pestañas que abrís».
+- Certificado de inscripción a examen (`/certificadoexamen.asp`): la lista entera reemplaza lo guardado.
+- Comprobante al inscribirse (`/inscripcionexamen.asp`): agrega esa materia, o la reemplaza si ya estaba con ese día.
+  Si no se sabe el nombre de la materia (viene de la dirección de la página de fechas), no se guarda.
+- Sysacad escribe el día sin año («jueves 10 de diciembre»). El año es el anterior, el actual o el siguiente: el único
+  de los tres en que ese día cae en ese día de la semana. Si no cae en ninguno, ese examen no va.
+- Lo guardado: `examenesInscriptos: { fecha, examenes }`, con la misma forma de cada examen que en el mensaje. Si el menú
+  muestra otro alumno que el anterior (`alumnoMenu`), se borra. Desvincular no lo borra (es del menú), pero sin vínculo
+  no se manda nada.
+- El alumno es el mismo `supercvgAlumno` de las pestañas. Desde la 2.5.0 se guarda al pasar por el menú siempre que Super
+  CVG esté vinculado. Apagar «Guardar las pestañas que abrís» borra las copias, pero no el alumno. La `v: 2` sigue
+  mandando `alumno: null` con ese ajuste apagado.
+
+## Mensajes
+
+- Página a extensión: `{ fuente: 'super-cvg', pide: 'examenes' }`.
+- Extensión a página, con `v: 3` para que el Super CVG publicado lo ignore:
+
+```js
+{
+  fuente: 'sysacad-lindo', para: 'super-cvg', v: 3, tipo: 'examenes',
+  vinculada: true | false,
+  alumno: 'PEREZ, Juan' | null,   // misma regla de coincidencia que en v: 2
+  fecha: 1762800000000 | null,    // cuándo se leyó lo guardado
+  examenes: [                     // ordenados por dia
+    { materia: 'Tecnologías para la Automatización', dia: '2026-12-10', turno: 'Tarde', teorico: '15:00', practico: '15:00', tribunal: 'Ferreyra' },
+  ],
+}
+```
+
+Reglas (Super CVG rechaza el mensaje entero si no se cumplen):
+
+- Con `vinculada: false`, van juntos `alumno: null`, `fecha: null` y `examenes: []`.
+- `fecha`: entero positivo, no más de un día adelante del reloj. Con `examenes` no vacío, nunca `null`.
+- `materia` + `dia` no se repiten (si llega repetido, Super CVG se queda con el primero).
+- `dia`: fecha válida `AAAA-MM-DD`. `teorico` y `practico`: `HH:MM` entre `00:00` y `23:59`, o `null`.
+- Textos sin caracteres de control, con los espacios juntados y sin quedar vacíos. `materia` hasta 120 caracteres y
+  nunca vacía. `turno` hasta 20 y `tribunal` hasta 80; vacíos van como `null`.
+- Hasta 30 exámenes. Cualquier otra clave, forma o tipo: el mensaje no vale.
+- Fuera, a propósito: el código de seguridad y el mail del presidente de mesa.
+- Van también los exámenes que ya pasaron, hasta que el alumno abra de nuevo el certificado.
+
+## Qué hace Super CVG con eso
+
+- El evento arranca a la hora más temprana entre `teorico` y `practico`. Sin las dos, es de día entero.
+- El id del evento de Google sale de `materia` + `dia`. Si reprograman la mesa, queda otro evento.
+- La coincidencia del alumno, lo que se muestra de lo que ya pasó y si el tribunal va a Google los decide Super CVG.
+  Solo en memoria.

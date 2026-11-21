@@ -4,7 +4,8 @@
 // Ajustes. Everything stays in this same browser: nothing is sent anywhere.
 //
 // Since 2.4.0 it also hands over the text copies of the Sysacad tabs the student opened (docs/CONTRATO-SUPERCVG.md),
-// with `v: 2` so the published Super CVG, which wants `v: 1`, ignores them.
+// with `v: 2` so the published Super CVG, which wants `v: 1`, ignores them. Since 2.5.0, the exams the student enrolled
+// in, for its calendar, with `v: 3`.
 (() => {
   'use strict';
   const limpios = (finales) =>
@@ -68,8 +69,60 @@
       tipo: 'pestanas',
       vinculada,
       guarda: vinculada && s.supercvgGuardaPestanas === true,
-      alumno: (vinculada && texto(s.supercvgAlumno, TOPES.alumno)) || null,
+      // Since 2.5.0 the name stays with the switch off (the exams use it), but this message still sends none then.
+      alumno: (vinculada && s.supercvgGuardaPestanas === true && texto(s.supercvgAlumno, TOPES.alumno)) || null,
       pestanas: vinculada ? pestanas(s.supercvgPestanas) : [],
+    }, location.origin);
+  };
+
+  // Since 2.5.0, the exams the student enrolled in, for Super CVG's calendar. Rebuilt with only the keys of the
+  // contract and checked one by one: anything off stays out instead of spoiling the whole message.
+  const HORA = /^([01]\d|2[0-3]):[0-5]\d$/;
+  const diaValido = (d) => {
+    if (typeof d !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+    const [a, m, dd] = d.split('-').map(Number);
+    const f = new Date(a, m - 1, dd);
+    return f.getFullYear() === a && f.getMonth() === m - 1 && f.getDate() === dd;
+  };
+  const examenes = (guardados) => {
+    const lista = Array.isArray(guardados) ? guardados : [];
+    const vistos = new Set();
+    return lista
+      .filter((e) => e && typeof e === 'object')
+      .map((e) => ({
+        materia: texto(e.materia, 120),
+        dia: e.dia,
+        turno: texto(e.turno, 20) || null,
+        teorico: HORA.test(e.teorico) ? e.teorico : null,
+        practico: HORA.test(e.practico) ? e.practico : null,
+        tribunal: texto(e.tribunal, 80) || null,
+      }))
+      .filter((e) => {
+        const clave = `${e.materia}|${e.dia}`;
+        if (!e.materia || !diaValido(e.dia) || vistos.has(clave)) return false;
+        vistos.add(clave);
+        return true;
+      })
+      .sort((a, b) => a.dia.localeCompare(b.dia))
+      .slice(0, 30);
+  };
+
+  const contestarExamenes = async () => {
+    const s = await chrome.storage.local.get({ supercvgVinculado: false, supercvgAlumno: null, examenesInscriptos: null });
+    const vinculada = s.supercvgVinculado === true;
+    const lista = vinculada ? examenes(s.examenesInscriptos?.examenes) : [];
+    const fecha = s.examenesInscriptos?.fecha;
+    const fechaValida = Number.isSafeInteger(fecha) && fecha > 0 && fecha <= Date.now() + DIA;
+    window.postMessage({
+      fuente: 'sysacad-lindo',
+      para: 'super-cvg',
+      v: 3,
+      tipo: 'examenes',
+      vinculada,
+      alumno: (vinculada && texto(s.supercvgAlumno, TOPES.alumno)) || null,
+      fecha: vinculada && fechaValida ? fecha : null,
+      // With no valid date, no exams: the contract never pairs a list with a null date.
+      examenes: vinculada && fechaValida ? lista : [],
     }, location.origin);
   };
 
@@ -97,6 +150,7 @@
       await contestar();
     },
     pestanas: () => contestarPestanas(),
+    examenes: () => contestarExamenes(),
     // Salir in Super CVG, or copies of another account: they go away, and it hears there are none.
     'olvidar-pestanas': async () => {
       await chrome.storage.local.remove(['supercvgPestanas', 'supercvgAlumno']);

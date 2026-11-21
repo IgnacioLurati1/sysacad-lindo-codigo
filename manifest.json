@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sysacad Lindo",
-  "version": "2.4.1",
+  "version": "2.5.0",
   "description": "Rediseña Sysacad FRRO: tu carrera por año, filtros, modo oscuro y tus materias a mano. Todas las acciones las hacés vos.",
   "permissions": ["storage"],
   "web_accessible_resources": [
